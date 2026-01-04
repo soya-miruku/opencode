@@ -505,16 +505,58 @@ Start by finding files related to the query, then load and analyze them systemat
           model: lastUser.model,
         }
         await Session.updateMessage(summaryUserMsg)
-        await Session.updatePart({
-          id: Identifier.ascending("part"),
-          messageID: summaryUserMsg.id,
-          sessionID,
-          type: "text",
-          text: "Summarize the task tool output above and continue with your task.",
-          synthetic: true,
-        } satisfies MessageV2.TextPart)
 
-        continue
+        // For RLM subtasks, the analysis IS the answer - don't let primary agent override
+        const isRlmTask = task.agent === "rlm"
+
+        if (isRlmTask && result) {
+          // RLM completed successfully - present the result directly and EXIT
+          // This truly overrides default behavior by not giving primary agent a chance to run
+          log.info("RLM subtask completed successfully - presenting result as final answer")
+
+          // Add the RLM result as the final assistant response
+          const finalAssistantMsg: MessageV2.Assistant = {
+            id: Identifier.ascending("message"),
+            sessionID,
+            role: "assistant",
+            parentID: summaryUserMsg.id,
+            mode: lastUser.agent,
+            agent: lastUser.agent,
+            path: {
+              cwd: Instance.directory,
+              root: Instance.worktree,
+            },
+            cost: 0,
+            tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            modelID: model.id,
+            providerID: model.providerID,
+            time: { created: Date.now(), completed: Date.now() },
+            finish: "end_turn", // Mark as finished to exit loop
+          }
+          await Session.updateMessage(finalAssistantMsg)
+
+          // Add the RLM output as text
+          await Session.updatePart({
+            id: Identifier.ascending("part"),
+            messageID: finalAssistantMsg.id,
+            sessionID,
+            type: "text",
+            text: `## Codebase Analysis Results\n\n${result.output}`,
+          } satisfies MessageV2.TextPart)
+
+          // Exit the loop - RLM's answer is the final answer
+          break
+        } else {
+          await Session.updatePart({
+            id: Identifier.ascending("part"),
+            messageID: summaryUserMsg.id,
+            sessionID,
+            type: "text",
+            text: "Summarize the task tool output above and continue with your task.",
+            synthetic: true,
+          } satisfies MessageV2.TextPart)
+          continue
+        }
       }
 
       // pending compaction
