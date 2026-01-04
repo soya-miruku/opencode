@@ -45,6 +45,7 @@ import { LLM } from "./llm"
 import { iife } from "@/util/iife"
 import { Shell } from "@/shell/shell"
 import { RLM } from "./rlm"
+import { RLMProcessor } from "./rlm-processor"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -312,6 +313,44 @@ export namespace SessionPrompt {
         })
 
       const model = await Provider.getModel(lastUser.model.providerID, lastUser.model.modelID)
+
+      // RLM Auto-delegation: For large codebases with broad queries, automatically delegate to RLM agent
+      if (step === 1 && tasks.length === 0 && !session.parentID) {
+        const userMsg = msgs.find((m) => m.info.role === "user")
+        const userText = userMsg?.parts
+          .filter((p): p is MessageV2.TextPart => p.type === "text" && !p.synthetic)
+          .map((p) => p.text)
+          .join(" ") ?? ""
+
+        if (userText && await RLMProcessor.shouldProcess(userText)) {
+          log.info("RLM auto-delegation triggered", { query: userText.slice(0, 100) })
+
+          // Inject RLM subtask as the first task
+          const rlmSubtask: MessageV2.SubtaskPart = {
+            id: Identifier.ascending("part"),
+            messageID: lastUser.id,
+            sessionID,
+            type: "subtask",
+            prompt: `Analyze this codebase to answer: "${userText}"
+
+Use the REPL tool to:
+1. Find relevant files using grep/subprocess
+2. Load and chunk the files
+3. Use llm_query_parallel to analyze chunks in parallel
+4. Synthesize a comprehensive answer
+
+Start by finding files related to the query, then load and analyze them systematically.`,
+            description: "RLM codebase analysis",
+            agent: "rlm",
+          }
+
+          // Add to session and tasks
+          await Session.updatePart(rlmSubtask)
+          tasks.push(rlmSubtask)
+          log.info("RLM subtask injected", { taskId: rlmSubtask.id })
+        }
+      }
+
       const task = tasks.pop()
 
       // pending subtask
