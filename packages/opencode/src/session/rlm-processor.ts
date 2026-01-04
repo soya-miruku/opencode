@@ -15,7 +15,7 @@ import { Log } from "../util/log"
 import { Instance } from "../project/instance"
 import { Config } from "../config/config"
 import { spawn } from "child_process"
-import { SessionPrompt } from "./prompt"
+// Note: Removed circular import of SessionPrompt - not needed here
 import { Session } from "."
 import { Identifier } from "../id/id"
 import { Agent } from "../agent/agent"
@@ -25,16 +25,20 @@ const log = Log.create({ service: "rlm-processor" })
 // Patterns that indicate broad codebase questions
 const BROAD_QUERY_PATTERNS = [
   /how\s+(does|do|is|are)\s+\w+\s+work/i,
-  /tell\s+me\s+(about|how)/i,
+  /how\s+.*\s+work/i,  // "how they work", "how tools work"
+  /tell\s+me\s+(about|how|all)/i,  // "tell me all areas"
+  /can\s+you\s+tell\s+me/i,  // "can you tell me"
   /explain\s+(how|the|all)/i,
   /what\s+(is|are)\s+the\s+\w+\s+(pattern|architecture|structure)/i,
   /give\s+me\s+(an?\s+)?overview/i,
-  /find\s+all\s+(places|instances|occurrences)/i,
-  /where\s+(is|are)\s+\w+\s+(used|defined|implemented)/i,
+  /find\s+all\s+(places|instances|occurrences|areas)/i,
+  /where\s+(is|are)\s+\w+\s+(used|defined|implemented|created)/i,
   /show\s+me\s+(all|every|the)/i,
   /list\s+(all|every|the)/i,
   /what\s+patterns/i,
   /how\s+.*\s+across\s+the\s+codebase/i,
+  /all\s+areas\s+where/i,  // "all areas where tools are used"
+  /how\s+.*\s+(are|is)\s+(used|created|defined|implemented)/i,  // "how tools are used"
 ]
 
 export namespace RLMProcessor {
@@ -65,24 +69,26 @@ export namespace RLMProcessor {
         return null
       }
 
-      const project = Instance.project
+      const projectDir = Instance.directory
+      log.info("Getting codebase metrics", { projectDir })
       let files: string[] = []
 
       // Try git ls-files first (faster, respects gitignore)
       try {
         const result = await new Promise<string>((resolve, reject) => {
-          const proc = spawn("git", ["ls-files"], { cwd: project })
+          const proc = spawn("git", ["ls-files"], { cwd: projectDir })
           let output = ""
           proc.stdout.on("data", (data) => (output += data))
           proc.on("close", (code) => (code === 0 ? resolve(output) : reject()))
           proc.on("error", reject)
         })
         files = result.trim().split("\n").filter(Boolean)
-      } catch {
+      } catch (gitErr) {
+        log.info("git ls-files failed, trying find", { error: String(gitErr) })
         // Fallback to find
         try {
           const result = await new Promise<string>((resolve, reject) => {
-            const proc = spawn("find", [".", "-type", "f", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.git/*"], { cwd: project })
+            const proc = spawn("find", [".", "-type", "f", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.git/*"], { cwd: projectDir })
             let output = ""
             proc.stdout.on("data", (data) => (output += data))
             proc.on("close", (code) => (code === 0 ? resolve(output) : reject()))
@@ -121,17 +127,17 @@ export namespace RLMProcessor {
    * Gather relevant context for a query using grep
    */
   export async function gatherContext(query: string): Promise<string[]> {
-    const project = Instance.project
+    const projectDir = Instance.directory
     const keywords = extractKeywords(query)
     const files: Set<string> = new Set()
 
-    log.info("Gathering context", { query, keywords })
+    log.info("Gathering context", { query, keywords, projectDir })
 
     for (const keyword of keywords) {
       try {
         const result = await new Promise<string>((resolve, reject) => {
           const proc = spawn("rg", ["-l", keyword, "--type", "ts", "--type", "js", "-g", "!node_modules"], {
-            cwd: project,
+            cwd: projectDir,
             timeout: 10000
           })
           let output = ""

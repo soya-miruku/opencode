@@ -322,7 +322,16 @@ export namespace SessionPrompt {
           .map((p) => p.text)
           .join(" ") ?? ""
 
-        if (userText && await RLMProcessor.shouldProcess(userText)) {
+        log.info("RLM check", { step, tasksLength: tasks.length, hasParent: !!session.parentID, userTextLength: userText.length })
+
+        let shouldUseRlm = false
+        try {
+          shouldUseRlm = userText ? await RLMProcessor.shouldProcess(userText) : false
+        } catch (rlmErr) {
+          log.error("RLM shouldProcess error", { error: String(rlmErr) })
+        }
+
+        if (shouldUseRlm) {
           log.info("RLM auto-delegation triggered", { query: userText.slice(0, 100) })
 
           // Inject RLM subtask as the first task
