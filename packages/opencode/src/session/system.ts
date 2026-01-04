@@ -6,6 +6,7 @@ import { Config } from "../config/config"
 import { Instance } from "../project/instance"
 import path from "path"
 import os from "os"
+import { $ } from "bun"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_ANTHROPIC_WITHOUT_TODO from "./prompt/qwen.txt"
@@ -16,6 +17,91 @@ import PROMPT_ANTHROPIC_SPOOF from "./prompt/anthropic_spoof.txt"
 import PROMPT_CODEX from "./prompt/codex.txt"
 import PROMPT_RLM_AUTO from "./prompt/rlm-auto.txt"
 import type { Provider } from "@/provider/provider"
+
+export interface CodebaseMetrics {
+  fileCount: number
+  totalLines: number
+  totalBytes: number
+  languages: string[]
+  isLarge: boolean // > 50 files or > 50K lines
+  isVeryLarge: boolean // > 200 files or > 200K lines
+  recommendation: "direct" | "rlm-light" | "rlm-full"
+}
+
+async function analyzeCodebase(): Promise<CodebaseMetrics | null> {
+  try {
+    const config = await Config.get()
+    if (config.experimental?.repl_tool !== true) {
+      return null
+    }
+
+    // Count files using git or find
+    const project = Instance.project
+    let files: string[] = []
+
+    if (project.vcs === "git") {
+      const result = await $`git -C ${Instance.directory} ls-files`.text().catch(() => "")
+      files = result.split("\n").filter(Boolean)
+    } else {
+      // Fallback: use glob for common code files
+      const glob = new Bun.Glob("**/*.{ts,tsx,js,jsx,py,go,rs,java,c,cpp,h,hpp,rb,php}")
+      files = await Array.fromAsync(
+        glob.scan({ cwd: Instance.directory, onlyFiles: true }),
+      ).catch(() => [])
+    }
+
+    // Sample lines from a subset of files
+    let totalLines = 0
+    let totalBytes = 0
+    const extensions = new Set<string>()
+
+    // Sample up to 100 files for line count estimation
+    const sampleSize = Math.min(files.length, 100)
+    const sampledFiles = files.slice(0, sampleSize)
+
+    for (const file of sampledFiles) {
+      const filepath = path.join(Instance.directory, file)
+      try {
+        const content = await Bun.file(filepath).text()
+        totalLines += content.split("\n").length
+        totalBytes += content.length
+        const ext = path.extname(file)
+        if (ext) extensions.add(ext)
+      } catch {
+        // Skip unreadable files
+      }
+    }
+
+    // Extrapolate if we sampled
+    if (sampleSize < files.length) {
+      const ratio = files.length / sampleSize
+      totalLines = Math.round(totalLines * ratio)
+      totalBytes = Math.round(totalBytes * ratio)
+    }
+
+    const isLarge = files.length > 50 || totalLines > 50000
+    const isVeryLarge = files.length > 200 || totalLines > 200000
+
+    let recommendation: "direct" | "rlm-light" | "rlm-full" = "direct"
+    if (isVeryLarge) {
+      recommendation = "rlm-full"
+    } else if (isLarge) {
+      recommendation = "rlm-light"
+    }
+
+    return {
+      fileCount: files.length,
+      totalLines,
+      totalBytes,
+      languages: Array.from(extensions).slice(0, 10),
+      isLarge,
+      isVeryLarge,
+      recommendation,
+    }
+  } catch {
+    return null
+  }
+}
 
 export namespace SystemPrompt {
   export function header(providerID: string) {
@@ -34,27 +120,43 @@ export namespace SystemPrompt {
 
   export async function environment() {
     const project = Instance.project
-    return [
-      [
-        `Here is some useful information about the environment you are running in:`,
-        `<env>`,
-        `  Working directory: ${Instance.directory}`,
-        `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
-        `  Platform: ${process.platform}`,
-        `  Today's date: ${new Date().toDateString()}`,
-        `</env>`,
-        `<files>`,
-        `  ${
-          project.vcs === "git" && false
-            ? await Ripgrep.tree({
-                cwd: Instance.directory,
-                limit: 200,
-              })
-            : ""
-        }`,
-        `</files>`,
-      ].join("\n"),
+    const metrics = await analyzeCodebase()
+
+    const envLines = [
+      `Here is some useful information about the environment you are running in:`,
+      `<env>`,
+      `  Working directory: ${Instance.directory}`,
+      `  Is directory a git repo: ${project.vcs === "git" ? "yes" : "no"}`,
+      `  Platform: ${process.platform}`,
+      `  Today's date: ${new Date().toDateString()}`,
     ]
+
+    if (metrics) {
+      envLines.push(`  <codebase-metrics>`)
+      envLines.push(`    Files: ${metrics.fileCount}`)
+      envLines.push(`    Estimated lines: ${metrics.totalLines.toLocaleString()}`)
+      envLines.push(`    Size: ${(metrics.totalBytes / 1024).toFixed(0)}KB`)
+      envLines.push(`    Languages: ${metrics.languages.join(", ")}`)
+      envLines.push(`    Scale: ${metrics.isVeryLarge ? "very-large" : metrics.isLarge ? "large" : "standard"}`)
+      envLines.push(`    RLM recommendation: ${metrics.recommendation}`)
+      envLines.push(`  </codebase-metrics>`)
+    }
+
+    envLines.push(`</env>`)
+    envLines.push(`<files>`)
+    envLines.push(
+      `  ${
+        project.vcs === "git" && false
+          ? await Ripgrep.tree({
+              cwd: Instance.directory,
+              limit: 200,
+            })
+          : ""
+      }`,
+    )
+    envLines.push(`</files>`)
+
+    return [envLines.join("\n")]
   }
 
   const LOCAL_RULE_FILES = [

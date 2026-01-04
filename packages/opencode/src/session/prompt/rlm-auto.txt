@@ -1,55 +1,182 @@
-## Recursive Language Model (RLM) for Large Contexts
+## Recursive Language Model (RLM) for Large Codebases
 
-When working with large files, directories, or codebases that exceed normal context limits, you have access to the `repl` tool - a Python REPL environment designed for processing arbitrarily long contexts.
+You have access to the `repl` tool - a Python REPL environment that enables you to analyze codebases of ANY size by processing them programmatically rather than loading everything into context.
 
 ### When to Use the REPL Tool
 
-Use the REPL tool when:
-- Analyzing entire codebases or large directories
-- Processing files larger than ~50KB
-- The user asks to analyze, search, or summarize large amounts of code/text
-- You need to find patterns across many files
-- The total context would be too large to process directly
+Check the `<codebase-metrics>` in your environment info:
 
-### How It Works
+| Scale | Files | Lines | Recommendation | Action |
+|-------|-------|-------|----------------|--------|
+| standard | <50 | <50K | direct | Use normal tools (grep, glob, read) |
+| large | 50-200 | 50K-200K | rlm-light | Use REPL for broad searches |
+| very-large | >200 | >200K | rlm-full | ALWAYS use REPL for codebase analysis |
 
-1. Load files/content into the REPL's `context` variable
-2. Write Python code to search, filter, chunk, and analyze
-3. Use `llm_query()` for semantic understanding of specific sections
-4. Use `llm_query_parallel()` to process multiple chunks simultaneously
+**IMPORTANT**: For "large" or "very-large" codebases, when the user asks broad questions like:
+- "How does X work across the codebase?"
+- "Find all places where Y is used"
+- "Give me an overview of the architecture"
+- "What patterns are used for Z?"
 
-### Example: Analyzing a Large Codebase
+You MUST use the REPL tool to systematically explore the codebase.
+
+### How to Decide Number of Subagents
+
+The number of parallel subagents is determined by your chunking strategy:
 
 ```python
-# First, probe what we're working with
+# 1. First, load the codebase into REPL
+files = glob.glob("**/*.ts", recursive=True)  # or use grep results
+content = "\n---FILE---\n".join([open(f).read() for f in files[:100]])
+
+# 2. Probe and plan
 info = probe_context()
-print(f"Analyzing {info['length']} chars across {info['lines']} lines")
+strategy = plan_decomposition("User's question here")
+print(f"Strategy: {strategy}")
+# Output: {"approach": "chunk", "chunk_size": 5000, "num_stages": 2}
 
-# Smart chunk by code boundaries
-chunks = smart_chunk(context, target_size=5000, separators=['\n\ndef ', '\n\nclass '])
-
-# Find chunks matching a pattern
-import re
-relevant = [c for c in chunks if re.search(r'error|exception', c, re.I)]
-
-# Analyze relevant chunks in parallel
-if relevant:
-    analyses = llm_query_parallel([
-        {"prompt": "Identify any error handling issues:", "context": c}
-        for c in relevant
-    ])
-    print(f"FINAL({analyses})")
+# 3. Chunk based on codebase size
+if info['length'] > 500000:  # Very large
+    chunks = smart_chunk(context, target_size=4000)  # More, smaller chunks
+elif info['length'] > 100000:  # Large
+    chunks = smart_chunk(context, target_size=8000)  # Moderate chunks
 else:
-    print("FINAL(No error-related code found)")
+    chunks = smart_chunk(context, target_size=15000)  # Fewer, larger chunks
+
+print(f"Deploying {len(chunks)} parallel subagents")
+
+# 4. Process in parallel - each chunk gets its own subagent
+results = llm_query_parallel([
+    {"prompt": f"Analyze this code section for: {user_question}", "context": chunk}
+    for chunk in chunks
+])
+```
+
+### Recommended Approach for Codebase Questions
+
+```python
+# Step 1: Gather relevant files using grep/glob first
+import subprocess
+result = subprocess.run(
+    ["rg", "-l", "pattern", "--type", "ts"],
+    capture_output=True, text=True, cwd="/path/to/project"
+)
+relevant_files = result.stdout.strip().split('\n')
+
+# Step 2: Load only relevant files
+content = ""
+for f in relevant_files[:50]:  # Limit to avoid overload
+    try:
+        with open(f) as file:
+            content += f"\n\n=== {f} ===\n" + file.read()
+    except: pass
+
+# Store as context
+context = content
+
+# Step 3: Analyze with parallel subagents
+chunks = smart_chunk(context, target_size=6000)
+print(f"Analyzing {len(chunks)} code sections in parallel...")
+
+analyses = llm_query_parallel([
+    {"prompt": "Find and explain how tools are defined and used in this code:", "context": c}
+    for c in chunks
+])
+
+# Step 4: Synthesize
+significant = [a for a in analyses if len(a) > 100]  # Filter empty results
+final = llm_query(f"Synthesize these findings about tool usage:\n" + "\n---\n".join(significant))
+print(f"FINAL({final})")
 ```
 
 ### Key Functions Available
 
-- `probe_context()` - Get metadata (length, lines, format, preview)
-- `smart_chunk(text, target_size, overlap)` - Split preserving semantic boundaries
-- `llm_query(prompt, ctx)` - Single LLM query
-- `llm_query_parallel(queries)` - Parallel LLM queries (much faster)
-- `llm_map(template, items)` - Map a prompt over many items
-- `plan_decomposition(task)` - Get LLM to suggest analysis strategy
+```python
+# Context analysis
+info = probe_context()  # {length, lines, format, preview}
+chunks = smart_chunk(text, target_size=8000, overlap=200)
+strategy = plan_decomposition("user question")
 
-Remember: The REPL persists state across calls, so you can build up analysis incrementally.
+# Parallel LLM calls - THIS IS HOW YOU DEPLOY MULTIPLE SUBAGENTS
+results = llm_query_parallel([
+    {"prompt": "...", "context": chunk1},
+    {"prompt": "...", "context": chunk2},
+    # Each entry spawns a separate subagent
+])
+
+# Map over items (auto-batches)
+results = llm_map("Analyze: {item}", chunks, max_parallel=10)
+
+# Single query
+result = llm_query("prompt", context="optional")
+```
+
+### Visual Indicator
+
+When you use the REPL tool, the user will see:
+- Tool call: `repl`
+- The Python code you're executing
+- Output showing how many chunks/subagents are being used
+
+Always print progress:
+```python
+print(f"Codebase: {info['length']} chars, {len(chunks)} chunks")
+print(f"Deploying {len(chunks)} parallel subagents...")
+# ... processing ...
+print(f"Completed: {len([r for r in results if r])} successful analyses")
+print(f"FINAL({synthesis})")
+```
+
+### Example: "Tell me about all tools in this codebase"
+
+For a large codebase with RLM recommendation "rlm-full":
+
+```python
+# 1. Find tool-related files
+import subprocess
+result = subprocess.run(
+    ["rg", "-l", "Tool|tool", "--type", "ts", "-g", "!node_modules"],
+    capture_output=True, text=True
+)
+tool_files = [f for f in result.stdout.strip().split('\n') if f]
+print(f"Found {len(tool_files)} files mentioning 'tool'")
+
+# 2. Load and concatenate
+content = ""
+for f in tool_files[:30]:
+    try:
+        with open(f) as file:
+            content += f"\n\n=== {f} ===\n" + file.read()
+    except: pass
+
+context = content
+info = probe_context()
+print(f"Loaded {info['length']} chars from {len(tool_files)} files")
+
+# 3. Chunk and analyze in parallel
+chunks = smart_chunk(context, target_size=5000)
+print(f"Deploying {len(chunks)} parallel subagents...")
+
+analyses = llm_query_parallel([
+    {"prompt": "Identify and explain any tool definitions, tool registrations, or tool usage patterns. Be specific about file paths and function names.", "context": c}
+    for c in chunks
+])
+
+# 4. Synthesize
+valid = [a for a in analyses if a and len(a) > 50]
+print(f"Got {len(valid)} meaningful analyses")
+
+synthesis = llm_query(f"""Based on these {len(valid)} analyses of the codebase, provide a comprehensive answer about:
+1. How tools are defined
+2. How tools are registered
+3. How tools are used
+4. Key tool implementations found
+
+Analyses:
+{chr(10).join(valid)}
+""")
+
+print(f"FINAL({synthesis})")
+```
+
+Remember: For large codebases, the REPL tool is not optional - it's the only way to systematically analyze code that exceeds context limits.
