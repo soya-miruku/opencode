@@ -2,11 +2,14 @@ import { Ripgrep } from "../file/ripgrep"
 import { Global } from "../global"
 import { Filesystem } from "../util/filesystem"
 import { Config } from "../config/config"
+import { Log } from "../util/log"
 
 import { Instance } from "../project/instance"
 import path from "path"
 import os from "os"
 import { $ } from "bun"
+
+const log = Log.create({ service: "system-prompt" })
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_ANTHROPIC_WITHOUT_TODO from "./prompt/qwen.txt"
@@ -17,6 +20,14 @@ import PROMPT_ANTHROPIC_SPOOF from "./prompt/anthropic_spoof.txt"
 import PROMPT_CODEX from "./prompt/codex.txt"
 import PROMPT_RLM_AUTO from "./prompt/rlm-auto.txt"
 import type { Provider } from "@/provider/provider"
+
+// Helper to handle both boolean true and string "true"
+function isReplToolEnabled(value: unknown): boolean {
+  if (value === true) return true
+  if (typeof value === "string") return value.toLowerCase() === "true"
+  if (typeof value === "number") return value === 1
+  return false
+}
 
 export interface CodebaseMetrics {
   fileCount: number
@@ -31,7 +42,18 @@ export interface CodebaseMetrics {
 async function analyzeCodebase(): Promise<CodebaseMetrics | null> {
   try {
     const config = await Config.get()
-    if (config.experimental?.repl_tool !== true) {
+    log.info("analyzeCodebase called", {
+      repl_tool_enabled: config.experimental?.repl_tool,
+      experimental: config.experimental
+    })
+    const replEnabled = isReplToolEnabled(config.experimental?.repl_tool)
+    log.info("RLM config check", {
+      repl_tool_value: config.experimental?.repl_tool,
+      repl_tool_type: typeof config.experimental?.repl_tool,
+      enabled: replEnabled
+    })
+    if (!replEnabled) {
+      log.info("RLM disabled - repl_tool not enabled in config")
       return null
     }
 
@@ -89,7 +111,7 @@ async function analyzeCodebase(): Promise<CodebaseMetrics | null> {
       recommendation = "rlm-light"
     }
 
-    return {
+    const metrics = {
       fileCount: files.length,
       totalLines,
       totalBytes,
@@ -98,7 +120,10 @@ async function analyzeCodebase(): Promise<CodebaseMetrics | null> {
       isVeryLarge,
       recommendation,
     }
-  } catch {
+    log.info("Codebase metrics computed", metrics)
+    return metrics
+  } catch (e) {
+    log.error("analyzeCodebase failed", { error: e })
     return null
   }
 }
@@ -171,9 +196,17 @@ export namespace SystemPrompt {
 
   export async function rlm() {
     const config = await Config.get()
-    if (config.experimental?.repl_tool === true) {
+    const replEnabled = isReplToolEnabled(config.experimental?.repl_tool)
+    log.info("RLM prompt check", {
+      repl_tool_value: config.experimental?.repl_tool,
+      repl_tool_type: typeof config.experimental?.repl_tool,
+      enabled: replEnabled
+    })
+    if (replEnabled) {
+      log.info("RLM prompt included in system prompt")
       return [PROMPT_RLM_AUTO]
     }
+    log.info("RLM prompt NOT included - repl_tool not enabled")
     return []
   }
 

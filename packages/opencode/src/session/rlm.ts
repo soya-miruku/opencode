@@ -41,11 +41,27 @@ export namespace RLM {
   }
 
   /**
+   * Check if a config value is truthy (handles boolean true, string "true", 1, etc.)
+   */
+  function isTruthy(value: unknown): boolean {
+    if (value === true) return true
+    if (typeof value === "string") return value.toLowerCase() === "true"
+    if (typeof value === "number") return value === 1
+    return false
+  }
+
+  /**
    * Check if RLM is enabled in config
    */
   export async function isEnabled(): Promise<boolean> {
     const config = await Config.get()
-    return config.experimental?.repl_tool === true
+    const enabled = isTruthy(config.experimental?.repl_tool)
+    log.info("RLM isEnabled check", {
+      repl_tool_value: config.experimental?.repl_tool,
+      repl_tool_type: typeof config.experimental?.repl_tool,
+      enabled
+    })
+    return enabled
   }
 
   /**

@@ -1,10 +1,12 @@
-## Recursive Language Model (RLM) for Large Codebases
+## CRITICAL: Recursive Language Model (RLM) for Large Codebases
 
-You have access to the `repl` tool - a Python REPL environment that enables you to analyze codebases of ANY size by processing them programmatically rather than loading everything into context.
+**YOU HAVE THE `repl` TOOL AVAILABLE.** This is a Python REPL environment that enables you to analyze codebases of ANY size by processing them programmatically rather than loading everything into context.
 
-### When to Use the REPL Tool
+### MANDATORY: When to Use the REPL Tool
 
-Check the `<codebase-metrics>` in your environment info:
+For questions that require understanding patterns across multiple files, architecture, or "how does X work" questions - **USE THE REPL TOOL FIRST** instead of grep/glob/read.
+
+Check the `<codebase-metrics>` in your environment info for guidance:
 
 | Scale | Files | Lines | Recommendation | Action |
 |-------|-------|-------|----------------|--------|
@@ -179,4 +181,4 @@ Analyses:
 print(f"FINAL({synthesis})")
 ```
 
-Remember: For large codebases, the REPL tool is not optional - it's the only way to systematically analyze code that exceeds context limits.
+**CRITICAL REMINDER**: For large codebases (>50 files or >50K lines), the REPL tool is not optional - it's the only way to systematically analyze code that exceeds context limits. When the user asks broad questions like "how does X work" or "tell me about Y across the codebase", you MUST use the REPL tool with llm_query_parallel to deploy multiple subagents.

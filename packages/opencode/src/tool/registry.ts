@@ -25,6 +25,14 @@ import { Flag } from "@/flag/flag"
 import { Log } from "@/util/log"
 import { LspTool } from "./lsp"
 
+// Helper to handle both boolean true and string "true"
+function isTruthy(value: unknown): boolean {
+  if (value === true) return true
+  if (typeof value === "string") return value.toLowerCase() === "true"
+  if (typeof value === "number") return value === 1
+  return false
+}
+
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
 
@@ -89,6 +97,16 @@ export namespace ToolRegistry {
     const custom = await state().then((x) => x.custom)
     const config = await Config.get()
 
+    const replEnabled = isTruthy(config.experimental?.repl_tool)
+    const batchEnabled = isTruthy(config.experimental?.batch_tool)
+    log.info("Tool registry: experimental tools", {
+      repl_enabled: replEnabled,
+      batch_enabled: batchEnabled,
+      repl_tool_value: config.experimental?.repl_tool,
+      repl_tool_type: typeof config.experimental?.repl_tool,
+      experimental: config.experimental
+    })
+
     return [
       InvalidTool,
       BashTool,
@@ -105,8 +123,8 @@ export namespace ToolRegistry {
       CodeSearchTool,
       SkillTool,
       ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
-      ...(config.experimental?.batch_tool === true ? [BatchTool] : []),
-      ...(config.experimental?.repl_tool === true ? [ReplTool] : []),
+      ...(batchEnabled ? [BatchTool] : []),
+      ...(replEnabled ? [ReplTool] : []),
       ...custom,
     ]
   }
