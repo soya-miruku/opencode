@@ -15,10 +15,8 @@ import { Log } from "../util/log"
 import { Instance } from "../project/instance"
 import { Config } from "../config/config"
 import { spawn } from "child_process"
-// Note: Removed circular import of SessionPrompt - not needed here
-import { Session } from "."
-import { Identifier } from "../id/id"
-import { Agent } from "../agent/agent"
+// Note: Removed Session, Identifier, Agent imports to avoid circular dependency
+// These were only used in the process() function which is not currently needed
 
 const log = Log.create({ service: "rlm-processor" })
 
@@ -181,147 +179,8 @@ export namespace RLMProcessor {
     return [...new Set(words)].sort((a, b) => b.length - a.length).slice(0, 5)
   }
 
-  /**
-   * Process query through RLM
-   *
-   * This creates a new session with the RLM agent, gathers context,
-   * and returns the analysis result.
-   */
-  export async function process(input: {
-    sessionID: string
-    query: string
-    parentMessageID: string
-  }): Promise<{ result: string; filesAnalyzed: number } | null> {
-    const config = await Config.get()
-    if (!isReplToolEnabled(config.experimental?.repl_tool)) {
-      log.info("RLM disabled - skipping processing")
-      return null
-    }
-
-    const metrics = await getCodebaseMetrics()
-    if (!metrics || !metrics.isLarge) {
-      log.info("Codebase not large enough for RLM", { metrics })
-      return null
-    }
-
-    if (!isBroadQuery(input.query)) {
-      log.info("Query not broad enough for RLM", { query: input.query })
-      return null
-    }
-
-    log.info("RLM processing initiated", {
-      query: input.query,
-      metrics,
-    })
-
-    // Gather relevant files
-    const relevantFiles = await gatherContext(input.query)
-    if (relevantFiles.length === 0) {
-      log.info("No relevant files found")
-      return null
-    }
-
-    log.info("Found relevant files", { count: relevantFiles.length })
-
-    // Create RLM session
-    const rlmAgent = await Agent.get("rlm")
-    if (!rlmAgent) {
-      log.error("RLM agent not found")
-      return null
-    }
-
-    const session = await Session.create({
-      parentID: input.sessionID,
-      title: `RLM Analysis: ${input.query.slice(0, 50)}...`,
-    })
-
-    // Build the RLM prompt with file list
-    const rlmPrompt = `
-You are analyzing a codebase to answer: "${input.query}"
-
-Relevant files found (${relevantFiles.length} files):
-${relevantFiles.map((f) => `- ${f}`).join("\n")}
-
-Use the REPL tool to:
-1. Load these files into context
-2. Chunk and analyze them in parallel using llm_query_parallel
-3. Synthesize the findings
-
-Example code to start:
-\`\`\`python
-import os
-
-# Load relevant files
-files_content = ""
-for f in ${JSON.stringify(relevantFiles.slice(0, 30))}:
-    try:
-        with open(f) as file:
-            files_content += f"\\n\\n=== {f} ===\\n" + file.read()
-    except: pass
-
-context = files_content
-info = probe_context()
-print(f"Loaded {info['length']} chars from files")
-
-# Chunk and analyze
-chunks = smart_chunk(context, target_size=5000)
-print(f"Analyzing {len(chunks)} chunks in parallel...")
-
-analyses = llm_query_parallel([
-    {"prompt": "${input.query.replace(/"/g, '\\"')}", "context": c}
-    for c in chunks
-])
-
-# Synthesize
-valid = [a for a in analyses if a and len(a) > 50]
-synthesis = llm_query(f"Synthesize these {len(valid)} findings into a comprehensive answer:\\n" + "\\n---\\n".join(valid))
-print(f"FINAL({synthesis})")
-\`\`\`
-
-Provide a comprehensive answer to the user's question.
-`.trim()
-
-    try {
-      const messageID = Identifier.ascending("message")
-      const result = await SessionPrompt.prompt({
-        messageID,
-        sessionID: session.id,
-        agent: "rlm",
-        parts: [{ type: "text", text: rlmPrompt }],
-      })
-
-      // Extract the final answer from the result
-      const messages = await Session.messages({ sessionID: session.id })
-      const lastAssistant = messages.find((m) => m.info.role === "assistant")
-
-      if (lastAssistant) {
-        const textParts = lastAssistant.parts.filter((p): p is { type: "text"; text: string } => p.type === "text")
-        const output = textParts.map((p) => p.text).join("\n")
-
-        // Look for FINAL() pattern in tool outputs
-        const toolParts = lastAssistant.parts.filter((p): p is any => p.type === "tool" && p.state?.output)
-        for (const part of toolParts) {
-          const finalMatch = part.state.output.match(/FINAL\(([\s\S]*?)\)/)
-          if (finalMatch) {
-            return {
-              result: finalMatch[1],
-              filesAnalyzed: relevantFiles.length,
-            }
-          }
-        }
-
-        return {
-          result: output,
-          filesAnalyzed: relevantFiles.length,
-        }
-      }
-
-      return null
-    } catch (e) {
-      log.error("RLM processing failed", { error: e })
-      return null
-    }
-  }
+  // Note: process() function removed to avoid circular dependency
+  // RLM processing is now done by injecting subtasks directly in prompt.ts
 
   /**
    * Check if a query should be processed by RLM
